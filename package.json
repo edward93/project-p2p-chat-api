@@ -2,7 +2,7 @@
   "name": "p2p-chat-api",
   "version": "1.0.0",
   "scripts": {
-    "start": "cross-env NODE_ENV=production tsx src/index.ts",
+    "start": "NODE_ENV=production tsx src/index.ts",
     "dev": "cross-env NODE_ENV=development tsx src/index.ts"
   },
   "keywords": [],
