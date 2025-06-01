@@ -1,18 +1,16 @@
 import * as dotenv from "dotenv";
 import express, { Request, Response } from "express";
 import { WebSocketServer, WebSocket } from "ws";
-import http, { IncomingMessage } from "http";
+import http from "http";
 import Hyperswarm from "hyperswarm";
 import crypto from "crypto";
 import net from "net";
 
-
 dotenv.config({ path: `.env.${process.env.NODE_ENV || "development"}` });
 
-// --- Express Setup ---
 const app = express();
-const server: http.Server = http.createServer(app);
-const PORT: number = parseInt(process.env.PORT || "3000", 10);
+const server = http.createServer(app);
+const PORT = parseInt(process.env.PORT || "3000", 10);
 
 app.use(express.json());
 
@@ -20,58 +18,82 @@ app.get("/health", (req: Request, res: Response): void => {
   res.send({ status: "ok" });
 });
 
-// --- WebSocket Setup ---
 const wss = new WebSocketServer({ server });
-const browserClients: Set<WebSocket> = new Set();
+const swarm = new Hyperswarm();
 
-wss.on("connection", (ws: WebSocket, req: IncomingMessage): void => {
+let room: string | null = null;
+let topic: Buffer | null = null;
+let browserClient: WebSocket | null = null;
+const swarmPeers = new Set<net.Socket>();
+
+wss.on("connection", (ws: WebSocket): void => {
   console.log("🌍 Browser connected");
-  browserClients.add(ws);
+  browserClient = ws;
 
-  ws.on("message", (msg: string | Buffer): void => {
-    console.log("📨 From browser:", msg.toString());
+  ws.on("message", (rawMsg: string | Buffer): void => {
+    try {
+      const msg = JSON.parse(rawMsg.toString());
+      console.log("📨 From browser:", msg);
+      // Initial room join
+      if (msg.type === "join" && typeof msg.room === "string") {
+        room = msg.room.trim();
+        if (!room) {
+          console.error("❌ Invalid room name");
+          return;
+        }
+        topic = crypto.createHash("sha256").update(room).digest();
 
-    for (const peer of swarmPeers) {
-      peer.write(msg);
-    }
-
-    // Broadcast to all sockets in the same room (that are connected to the same backend)
-    browserClients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(msg.toString());
+        swarm.join(topic, { lookup: true, announce: true });
+        console.log(`✅ Joined room swarm: ${room}`);
+        return;
       }
-    });
+
+      // Forward chat messages to all connected peers
+      const textMsg = JSON.stringify(msg);
+      for (const peer of swarmPeers) {
+        peer.write(textMsg);
+      }
+
+      // Broadcast to all sockets in the same room (that are connected to the same backend)
+      if (browserClient?.readyState === WebSocket.OPEN) {
+        browserClient.send(textMsg);
+      }
+    } catch (err) {
+      console.error("💥 Failed to parse message:", err);
+    }
   });
 
   ws.on("close", (): void => {
-    browserClients.delete(ws);
+    console.log("❌ Browser disconnected");
+    browserClient = null;
   });
 });
 
-// --- Hyperswarm Setup ---
-const swarm = new Hyperswarm();
-const topic: Buffer = crypto.createHash("sha256").update("chat-room").digest();
-
-const swarmPeers: Set<net.Socket> = new Set();
-
-swarm.on("connection", (socket: net.Socket, details: any): void => {
-  console.log("🔌 Connected to Hyperswarm peer");
+// Handle Hyperswarm peer connections
+swarm.on("connection", (socket: net.Socket): void => {
+  console.log("🔌 Hyperswarm peer connected");
   swarmPeers.add(socket);
 
   socket.on("data", (data: Buffer): void => {
-    for (const ws of browserClients) {
-      ws.send(data.toString());
+    if (browserClient && browserClient.readyState === WebSocket.OPEN) {
+      browserClient.send(data.toString());
     }
   });
 
   socket.on("close", (): void => {
+    console.log("🔌 Hyperswarm peer disconnected");
     swarmPeers.delete(socket);
   });
 });
 
-swarm.join(topic, { lookup: true, announce: true });
+swarm.on("peer", (peer: any): void => {
+  console.log("🔍 Peer discovered:", peer);
+});
 
-// --- Start Server ---
+swarm.on("error", (err: Error): void => {
+  console.error("❗ Hyperswarm error:", err);
+});
+
 server.listen(PORT, (): void => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
