@@ -73,6 +73,7 @@ wss.on("connection", (ws: WebSocket): void => {
 swarm.on("connection", (socket: net.Socket): void => {
   console.log("🔌 Hyperswarm peer connected");
   swarmPeers.add(socket);
+  broadcastPeerCount();
 
   socket.on("data", (data: Buffer): void => {
     if (browserClient && browserClient.readyState === WebSocket.OPEN) {
@@ -97,3 +98,11 @@ swarm.on("error", (err: Error): void => {
 server.listen(PORT, (): void => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
+
+const broadcastPeerCount = () => {
+  if (browserClient && browserClient.readyState === WebSocket.OPEN) {
+    browserClient.send(
+      JSON.stringify({ type: "peer_count", count: swarmPeers.size })
+    );
+  }
+};
